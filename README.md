@@ -1,4 +1,4 @@
-# WAN Video Extender PRO - Memory Optimized
+# WAN Video Extender PRO 
 
 **Extend your WAN 2.2 videos with advanced features: per-loop prompts, LoRA switching, reference images, and smart overlap for maximum character consistency.**
 
