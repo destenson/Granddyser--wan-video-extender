@@ -17,7 +17,7 @@
 - **Sampler:** `euler_a`
 - **Scheduler:** `beta`
 - **CFG:** `1.0`
-- **Overlap Frames:** `16-24` (more = better consistency)
+- **Overlap Frames:** `8-24` (more = better consistency)
 
 ---
 
@@ -184,10 +184,8 @@ WAN Video Extender PRO
 ```
 
 **Tips:**
-- Use a clear, high-quality portrait
 - Alternative: First frame from your input video
-- Combine with Character LoRA for best results
-- Increase overlap to 24+ when using reference images
+- Increase overlap up to 20 for higher consistence, but the final video will be shorter
 
 ---
 
