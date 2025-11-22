@@ -118,6 +118,46 @@ Loop 2:
 Result: Original + all generated frames combined
 ```
 
+## Understanding Image Inputs
+
+The node has **two types of image inputs** that serve different purposes:
+
+### 1. Global `image` Input (Top of Node)
+- **Purpose**: Initial starting image for the entire workflow
+- **Used once**: Loaded at the beginning and provides context for Loop 1 (if `image_loop_1` is empty)
+- **Automatic context**: Last N frames are kept as overlap context for subsequent loops
+
+### 2. Loop-Specific `image_loop_X` Inputs (Per Loop)
+- **Purpose**: Optional override for each individual loop
+- **Hard cut**: When provided, creates a scene cut using these frames as new context
+- **Fallback behavior**: When empty, automatically uses context from previous loop
+
+### Behavior Matrix
+
+| Scenario | Global `image` | `image_loop_1` | Result |
+|----------|---------------|----------------|---------|
+| Normal start | ✅ Provided | ⬜ Empty | Loop 1 uses global image |
+| Hard cut Loop 1 | ⬜ Empty | ✅ Provided | Loop 1 uses loop image |
+| Both provided | ✅ Provided | ✅ Provided | Loop 1 uses loop image (overrides global) |
+| Auto-extend | ✅ Provided | ⬜ Empty (Loop 2) | Loop 2 extends from Loop 1's last frames |
+
+### Typical Workflow Example
+```
+Global image: Initial scene
+  ↓
+Loop 1: image_loop_1 = empty → Uses global image
+  ↓
+Loop 2: image_loop_2 = empty → Auto-extends from Loop 1
+  ↓
+Loop 3: image_loop_3 = Next-Scene LoRA output → Hard cut to new scene
+  ↓
+Loop 4: image_loop_4 = empty → Auto-extends from Loop 3
+```
+
+**Key Point**: Set the global `image` input once at the start. Use `image_loop_X` only when you want to inject a new scene at a specific loop.
+
+---
+
 ### Overlap Settings Guide
 
 | Overlap | New/Loop | Speed | Consistency | Best For |
