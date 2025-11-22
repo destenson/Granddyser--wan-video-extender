@@ -23,11 +23,10 @@ dynamic = ["dependencies"]
 dependencies = {file = ["requirements.txt"]}
 
 [project.urls]
-Repository = "https://github.com/Granddyser/qwen3-vl-comfy-ui"
-"Bug Tracker" = "https://github.com/Granddyser/qwen3-vl-comfy-ui/issues"
+Repository = "https://github.com/Granddyser/wan-video-extender"
+"Bug Tracker" = "https://github.com/Granddyser/wan-video-extender/issues"
 
 [tool.comfy]
 PublisherId = "granddyser"
 DisplayName = "Wan-video-extender"
-Icon = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/qwen.png"
 requires-comfyui = ">=1.0.0"
