@@ -262,13 +262,6 @@ This node is provided as-is for use with ComfyUI and WAN 2.2.
 
 ---
 
-## 🙏 Credits
+Special thanks to [phr00t](https://github.com/phr00t) for the complete model.
 
-- **WAN 2.2 Model** by the WAN team
-- **ComfyUI** framework
-- **Memory optimization** architecture
 
----
-
-**Happy video generating! 🎬**
-</document_content>
