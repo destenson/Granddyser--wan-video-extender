@@ -47,7 +47,7 @@
 
 ## 🔧 Installation
 
-1. **Copy the node file** to your ComfyUI custom nodes:
+1. **Available directly via ComfyUI Manager! Just search for 'Wan Video Extender' or copy the node file to your ComfyUI custom nodes:**
 ```bash
 git clone https://github.com/Granddyser/wan-video-extender.git
 ```
