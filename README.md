@@ -1,4 +1,13 @@
-# WAN Video Extender PRO 
+# WAN Video Extender PRO
+
+## v1.3.0 - High/Low Noise Support (Beta)
+
+* **New Node:** Added `WanVideoExtenderLowHigh` support. You can now use separate High/Low noise diffusion models and LoRAs for more precise control.
+* **New Workflow:** Included `wan-video-extender-high-low.json` to get started with the split model setup.
+* **Fix:** Resolved issues with VACE module integration.
+* **⚠️ Beta Warning:** The High/Low node is currently in Beta. Please monitor your **System RAM** (CPU RAM, not VRAM). Usage may increase significantly after Loop 5 depending on your hardware configuration.
+
+---
 
 ## v1.2.1: VACE Fixes & Per-Loop Control
 
