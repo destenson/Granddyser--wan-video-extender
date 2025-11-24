@@ -2,6 +2,8 @@
 
 ![Demo](demo.gif)
 
+## v1.3.3 - Memory-issue fix for high-low-noise-node, optional endframe für Extender-native-node
+
 ## v1.3.2 - Logic Fixes & Memory Optimization
 
 * **Memory Fix:** Resolved high RAM usage during final video assembly in both nodes - segments now merge incrementally instead of loading all at once.
