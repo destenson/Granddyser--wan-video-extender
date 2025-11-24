@@ -294,24 +294,40 @@ class WanVideoExtenderLowHigh:
             print(f"⚠ Error loading LoRA {lora_name}: {e}")
             return model, clip
 
+
     def wan_vace_logic(self, vae, width, height, length, strength, control_video, control_masks, reference_image=None):
-        """VACE-Logik mit optionalem Referenzbild (Char-Consistency)."""
-        device = comfy.model_management.get_torch_device()
+        """VACE-Logik mit optionalem Referenzbild (Char-Consistency).
+
+        Wichtige Änderung für VRAM-Sparen:
+        - Alle großen Pixel-/Masken-Tensoren bleiben auf CPU.
+        - Nur die komprimierten Latents liegen auf dem Gerät des VAE.
+        Dadurch werden große Allokationen auf der GPU vermieden, insbesondere
+        bei mehreren Loops im gleichen Workflow.
+        """
+        # Eingangs-Video sollte bereits auf CPU liegen (full_pixels / full_masks).
+        video_device = control_video.device
 
         base_latent_length = ((length - 1) // 4) + 1
-        control_video = control_video.to(device)
 
+        # Maske auf das gleiche Device/Dtype wie das Video bringen (CPU)
         if control_masks is None:
-            mask = torch.ones((length, height, width, 1), device=device)
+            mask = torch.ones(
+                (length, height, width, 1),
+                device=video_device,
+                dtype=control_video.dtype,
+            )
         else:
-            mask = control_masks.to(device)
+            mask = control_masks.to(video_device)
             if mask.ndim == 3:
                 mask = mask.unsqueeze(-1)
 
+        # Pixel-Manipulationen vollständig auf CPU durchführen
         control_video_shifted = control_video - 0.5
         inactive_px = (control_video_shifted * (1.0 - mask)) + 0.5
         reactive_px = (control_video_shifted * mask) + 0.5
 
+        # Encodierung mit VAE
+        # Das VAE kümmert sich intern um das richtige Device (GPU/CPU).
         inactive_encoded = vae.encode(inactive_px[:, :, :, :3])
         reactive_encoded = vae.encode(reactive_px[:, :, :, :3])
 
@@ -323,6 +339,7 @@ class WanVideoExtenderLowHigh:
         target_h = height // 8
         target_w = width // 8
 
+        # Auf gewünschte Latentgröße bringen (T, H/8, W/8)
         if (
             inactive_encoded.shape[2] != base_latent_length
             or inactive_encoded.shape[3] != target_h
@@ -344,6 +361,7 @@ class WanVideoExtenderLowHigh:
         control_video_latent = torch.cat([inactive_encoded, reactive_encoded], dim=1)
         print(f"Control video latent (before ref): {control_video_latent.shape}")
 
+        # Optionales Referenzbild für Char-Consistency
         trim_latent = 0
         if reference_image is not None:
             print("🎨 Using reference image for character consistency")
@@ -385,6 +403,7 @@ class WanVideoExtenderLowHigh:
             f"Final latent_length: {latent_length} (base: {base_latent_length}, trim: {trim_latent})"
         )
 
+        # Maske in VAE-Auflösung bringen
         vae_stride = 8
         height_mask = height // vae_stride
         width_mask = width // vae_stride
@@ -416,6 +435,9 @@ class WanVideoExtenderLowHigh:
             print(f"Mask with reference padding: {mask_proc.shape}")
 
         mask_proc = mask_proc.unsqueeze(0)
+        # Maske auf dasselbe Device wie die Latents legen (klein, daher VRAM-freundlich)
+        mask_proc = mask_proc.to(control_video_latent.device)
+
         print(f"Final mask shape: {mask_proc.shape}")
 
         return control_video_latent, mask_proc, trim_latent
@@ -688,11 +710,8 @@ class WanVideoExtenderLowHigh:
         for loop_idx in range(extension_loops):
             loop_id = loop_idx + 1
 
-            try:
-                comfy.model_management.unload_all_models()
-            except Exception as e:
-                print(f"⚠ unload_all_models() failed (ignored): {e}")
-
+            # Nur Cache leeren, keine globalen Modelle entladen,
+            # damit andere Workflows bzw. VACE-Knoten nicht hängen bleiben.
             comfy.model_management.soft_empty_cache()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

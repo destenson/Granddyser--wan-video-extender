@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+
 import comfy.model_management
 import comfy.sample
 import comfy.utils
@@ -15,6 +16,7 @@ import gc
 
 
 class WanVideoExtenderNative:
+
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -80,6 +82,7 @@ class WanVideoExtenderNative:
                 }),
                 "use_reference_loop_1": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 1"}),
                 "use_overlap_loop_1": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 1"}),
+                "use_endframe_loop_1": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 1 (VACE Endframe)."}),
                 "reference_image_1": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
 
                 # LOOP 2
@@ -89,6 +92,7 @@ class WanVideoExtenderNative:
                 "image_loop_2": ("IMAGE", {"tooltip": "Optionales Bild / Bilder für Loop 2 (harte Schnitt-Quelle)."}),
                 "use_reference_loop_2": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 2"}),
                 "use_overlap_loop_2": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 2"}),
+                "use_endframe_loop_2": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 2 (VACE Endframe)."}),
                 "reference_image_2": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
 
                 # LOOP 3
@@ -98,8 +102,8 @@ class WanVideoExtenderNative:
                 "image_loop_3": ("IMAGE", {"tooltip": "Optionales Bild / Bilder für Loop 3 (harte Schnitt-Quelle)."}),
                 "use_reference_loop_3": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 3"}),
                 "use_overlap_loop_3": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 3"}),
+                "use_endframe_loop_3": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 3 (VACE Endframe)."}),
                 "reference_image_3": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
-                
 
                 # LOOP 4
                 "prompt_loop_4": ("STRING", {"multiline": False, "default": "", "tooltip": "Loop 4 Prompt (leer = Base Prompt)"}),
@@ -108,6 +112,7 @@ class WanVideoExtenderNative:
                 "image_loop_4": ("IMAGE", {"tooltip": "Optionales Bild / Bilder für Loop 4 (harte Schnitt-Quelle)."}),
                 "use_reference_loop_4": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 4"}),
                 "use_overlap_loop_4": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 4"}),
+                "use_endframe_loop_4": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 4 (VACE Endframe)."}),
                 "reference_image_4": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
 
                 # LOOP 5
@@ -117,6 +122,7 @@ class WanVideoExtenderNative:
                 "image_loop_5": ("IMAGE", {"tooltip": "Optionales Bild / Bilder für Loop 5 (harte Schnitt-Quelle)."}),
                 "use_reference_loop_5": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 5"}),
                 "use_overlap_loop_5": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 5"}),
+                "use_endframe_loop_5": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 5 (VACE Endframe)."}),
                 "reference_image_5": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
 
                 # LOOP 6
@@ -126,6 +132,7 @@ class WanVideoExtenderNative:
                 "image_loop_6": ("IMAGE", {"tooltip": "Optionales Bild / Bilder für Loop 6 (harte Schnitt-Quelle)."}),
                 "use_reference_loop_6": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 6"}),
                 "use_overlap_loop_6": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 6"}),
+                "use_endframe_loop_6": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 6 (VACE Endframe)."}),
                 "reference_image_6": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
 
                 # LOOP 7
@@ -135,6 +142,7 @@ class WanVideoExtenderNative:
                 "image_loop_7": ("IMAGE", {"tooltip": "Optionales Bild / Bilder für Loop 7 (harte Schnitt-Quelle)."}),
                 "use_reference_loop_7": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 7"}),
                 "use_overlap_loop_7": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 7"}),
+                "use_endframe_loop_7": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 7 (VACE Endframe)."}),
                 "reference_image_7": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
 
                 # LOOP 8
@@ -144,6 +152,7 @@ class WanVideoExtenderNative:
                 "image_loop_8": ("IMAGE", {"tooltip": "Optionales Bild / Bilder für Loop 8 (harte Schnitt-Quelle)."}),
                 "use_reference_loop_8": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 8"}),
                 "use_overlap_loop_8": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 8"}),
+                "use_endframe_loop_8": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 8 (VACE Endframe)."}),
                 "reference_image_8": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
 
                 # LOOP 9
@@ -153,6 +162,7 @@ class WanVideoExtenderNative:
                 "image_loop_9": ("IMAGE", {"tooltip": "Optionales Bild / Bilder für Loop 9 (harte Schnitt-Quelle)."}),
                 "use_reference_loop_9": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 9"}),
                 "use_overlap_loop_9": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 9"}),
+                "use_endframe_loop_9": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 9 (VACE Endframe)."}),
                 "reference_image_9": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
 
                 # LOOP 10
@@ -162,6 +172,7 @@ class WanVideoExtenderNative:
                 "image_loop_10": ("IMAGE", {"tooltip": "Optionales Bild / Bilder für Loop 10 (harte Schnitt-Quelle)."}),
                 "use_reference_loop_10": ("BOOLEAN", {"default": False, "tooltip": "Use global reference image for Loop 10"}),
                 "use_overlap_loop_10": ("BOOLEAN", {"default": False, "tooltip": "Use overlap context for Loop 10"}),
+                "use_endframe_loop_10": ("BOOLEAN", {"default": False, "tooltip": "Nutze Bild(er) des nächsten Loops als Endframe für Loop 10 (falls vorhanden, sonst ignoriert)."}),
                 "reference_image_10": ("IMAGE", {"tooltip": "Character Reference für VACE"}),
             }
         }
@@ -170,15 +181,12 @@ class WanVideoExtenderNative:
     RETURN_NAMES = ("full_video", "used_prompts")
     FUNCTION = "extend_video"
     CATEGORY = "WanCustom"
-    
+
     def _safe_float(self, x, default=1.0):
         try:
             return float(x)
-        except:
+        except Exception:
             return default
-
-
-    
 
     def _normalize_frame(self, frame: torch.Tensor) -> torch.Tensor:
         """Normalize frame to [H, W, 3] in range 0-1"""
@@ -230,7 +238,7 @@ class WanVideoExtenderNative:
     def _load_video_from_file(self, video_obj):
         """Extract frames from VideoFromFile object"""
         try:
-            if hasattr(video_obj, 'get_stream_source'):
+            if hasattr(video_obj, "get_stream_source"):
                 stream_source = video_obj.get_stream_source()
 
                 if isinstance(stream_source, str):
@@ -349,6 +357,7 @@ class WanVideoExtenderNative:
         trim_latent = 0
         if reference_image is not None:
             print("🎨 Using reference image for character consistency")
+
             # Resize reference to target size
             ref_resized = comfy.utils.common_upscale(
                 reference_image[:1].movedim(-1, 1),
@@ -503,12 +512,12 @@ class WanVideoExtenderNative:
         use_reference_loop_3=False,
         use_reference_loop_4=False,
         use_reference_loop_5=False,
-        use_reference_loop_6=False, 
+        use_reference_loop_6=False,
         use_reference_loop_7=False,
         use_reference_loop_8=False,
         use_reference_loop_9=False,
         use_reference_loop_10=False,
-         # Loop Overlap Toggles
+        # Loop Overlap Toggles
         use_overlap_loop_1=False,
         use_overlap_loop_2=False,
         use_overlap_loop_3=False,
@@ -519,6 +528,17 @@ class WanVideoExtenderNative:
         use_overlap_loop_8=False,
         use_overlap_loop_9=False,
         use_overlap_loop_10=False,
+        # Loop Endframe Toggles
+        use_endframe_loop_1=False,
+        use_endframe_loop_2=False,
+        use_endframe_loop_3=False,
+        use_endframe_loop_4=False,
+        use_endframe_loop_5=False,
+        use_endframe_loop_6=False,
+        use_endframe_loop_7=False,
+        use_endframe_loop_8=False,
+        use_endframe_loop_9=False,
+        use_endframe_loop_10=False,
         #Loop reference_image
         reference_image_1=None,
         reference_image_2=None,
@@ -531,9 +551,8 @@ class WanVideoExtenderNative:
         reference_image_9=None,
         reference_image_10=None,
     ):
-
         print("\n" + "=" * 60)
-        print("WAN VIDEO EXTENDER PRO (Memory Optimized + Loop Images)")
+        print("WAN VIDEO EXTENDER PRO (Memory Optimized + Loop Images + Endframe)")
         print("=" * 60)
 
         # Collect loop-specific settings
@@ -575,21 +594,46 @@ class WanVideoExtenderNative:
             image_loop_9,
             image_loop_10,
         ]
-        
+
         loop_use_reference = [
-            use_reference_loop_1, use_reference_loop_2, use_reference_loop_3,
-            use_reference_loop_4, use_reference_loop_5, use_reference_loop_6,
-            use_reference_loop_7, use_reference_loop_8, use_reference_loop_9,
+            use_reference_loop_1,
+            use_reference_loop_2,
+            use_reference_loop_3,
+            use_reference_loop_4,
+            use_reference_loop_5,
+            use_reference_loop_6,
+            use_reference_loop_7,
+            use_reference_loop_8,
+            use_reference_loop_9,
             use_reference_loop_10,
         ]
 
         loop_use_overlap = [
-            use_overlap_loop_1, use_overlap_loop_2, use_overlap_loop_3,
-            use_overlap_loop_4, use_overlap_loop_5, use_overlap_loop_6,
-            use_overlap_loop_7, use_overlap_loop_8, use_overlap_loop_9,
+            use_overlap_loop_1,
+            use_overlap_loop_2,
+            use_overlap_loop_3,
+            use_overlap_loop_4,
+            use_overlap_loop_5,
+            use_overlap_loop_6,
+            use_overlap_loop_7,
+            use_overlap_loop_8,
+            use_overlap_loop_9,
             use_overlap_loop_10,
         ]
-        
+
+        loop_use_endframe = [
+            use_endframe_loop_1,
+            use_endframe_loop_2,
+            use_endframe_loop_3,
+            use_endframe_loop_4,
+            use_endframe_loop_5,
+            use_endframe_loop_6,
+            use_endframe_loop_7,
+            use_endframe_loop_8,
+            use_endframe_loop_9,
+            use_endframe_loop_10,
+        ]
+
         loop_reference_images = [
             reference_image_1,
             reference_image_2,
@@ -602,8 +646,6 @@ class WanVideoExtenderNative:
             reference_image_9,
             reference_image_10,
         ]
-
-        
 
         used_prompts_log = []
 
@@ -757,7 +799,9 @@ class WanVideoExtenderNative:
 
             # Auswahl der tatsächlich verwendeten Kontextframes (max overlap_frames, max generate_frames)
             if len(base_context_candidate) > 0:
-                max_context = min(len(base_context_candidate), overlap_frames, generate_frames)
+                max_context = min(
+                    len(base_context_candidate), overlap_frames, generate_frames
+                )
                 selected_context_frames = base_context_candidate[-max_context:]
             else:
                 selected_context_frames = []
@@ -782,28 +826,70 @@ class WanVideoExtenderNative:
                 context_batch = torch.stack(selected_context_frames)
                 context_count = context_batch.shape[0]
 
-                write_context = True
+                write_context = False
 
                 if loop_idx == 0:
                     # Im ersten Loop immer schreiben, wenn wir Frames haben (Startbild)
-                    write_context = True 
-                    print(f"🚀 Loop 1: Forcing Input Image injection ({context_count} frames)")
+                    write_context = True
+                    print(
+                        f"🚀 Loop 1: Forcing Input Image injection ({context_count} frames)"
+                    )
                 elif loop_use_overlap[loop_idx]:
                     # In späteren Loops auf den User-Switch hören
                     write_context = True
-                
+
                 if write_context:
                     full_pixels[:context_count] = context_batch
-                    full_masks[:context_count] = 0.0 # WICHTIG: Maske auf 0 (Fest), damit es bleibt!
+                    full_masks[:context_count] = 0.0  # WICHTIG: Maske auf 0 (Fest)
                     print(f"✅ Context wrote to canvas: {context_count} frames")
                 else:
                     context_count = 0
                     print("❌ Context/Overlap disabled for this loop")
-                # --- KORREKTUR ENDE ---
-
-        
             else:
                 context_batch = None
+
+            # === ENDFRAME LOGIK (optional, pro Loop) ===
+            endframe_count = 0
+            use_endframe_flag = (
+                loop_idx < len(loop_use_endframe) and loop_use_endframe[loop_idx]
+            )
+            if use_endframe_flag:
+                # Nur sinnvoll, wenn es mindestens einen nächsten Loop gibt
+                next_loop_index = loop_idx + 1
+                next_loop_img = None
+                if next_loop_index < extension_loops and next_loop_index < len(loop_images):
+                    next_loop_img = loop_images[next_loop_index]
+
+                if next_loop_img is not None:
+                    end_frames_list = self._tensor_to_frame_list(next_loop_img)
+                    if len(end_frames_list) > 0:
+                        end_batch = torch.stack(end_frames_list)
+                        # ggf. auf H/W der aktuellen Sequenz skalieren
+                        if end_batch.shape[1] != H or end_batch.shape[2] != W:
+                            end_batch = comfy.utils.common_upscale(
+                                end_batch.movedim(-1, 1),
+                                W,
+                                H,
+                                "lanczos",
+                                "disabled",
+                            ).movedim(1, -1)
+
+                        ef = min(end_batch.shape[0], generate_frames)
+                        start_idx = max(0, generate_frames - ef)
+                        full_pixels[start_idx: start_idx + ef] = end_batch[:ef]
+                        full_masks[start_idx: start_idx + ef] = 0.0  # Endframes fixieren
+                        endframe_count = ef
+                        print(
+                            f"🎯 Loop {loop_id}: using {ef} Endframe(s) from next loop image."
+                        )
+                    else:
+                        print(
+                            f"⚠ Loop {loop_id}: use_endframe enabled, aber keine verwertbaren Frames im nächsten Loop-Image."
+                        )
+                else:
+                    print(
+                        f"ℹ Loop {loop_id}: use_endframe aktiviert, aber kein nächstes Loop-Image gefunden oder kein weiterer Loop."
+                    )
 
             # === VACE LOGIC (mit Reference Image – korrekt implementiert) ===
             # Referenz pro Loop
@@ -817,8 +903,6 @@ class WanVideoExtenderNative:
             else:
                 print(f"🎨 Loop {loop_id}: No reference image used.")
 
-            
-            
             vace_latents, vace_masks, trim_latent = self.wan_vace_logic(
                 vae=vae,
                 width=W,
@@ -990,7 +1074,7 @@ class WanVideoExtenderNative:
         except Exception as e:
             print(f"⚠ Could not remove temp dir {segment_dir}: {e}")
 
-        return (full_video, "\n".join(used_prompts_log))
+        return full_video, "\n".join(used_prompts_log)
 
 
 NODE_CLASS_MAPPINGS = {
