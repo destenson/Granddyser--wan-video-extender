@@ -743,6 +743,44 @@ class WanVideoExtenderNative:
         base_model = model
         base_clip = clip
 
+        # === PRE-ENCODE ALL PROMPTS (Memory Optimization) ===
+        # Encode alle Prompts JETZT mit base_clip, damit CLIP später nicht mehr
+        # geladen werden muss wenn das Diffusion Model im VRAM ist.
+        # HINWEIS: LoRA-CLIP-Patching wird hier nicht angewendet (nur base_clip)
+        print("\n🔤 Pre-encoding all prompts...")
+        
+        def get_cond(text, clip_obj):
+            tokens = clip_obj.tokenize(text)
+            cond, pooled = clip_obj.encode_from_tokens(tokens, return_pooled=True)
+            # Wichtig: Auf CPU verschieben um VRAM zu sparen
+            # pooled kann None sein bei manchen CLIP-Modellen!
+            cond_cpu = cond.cpu() if hasattr(cond, 'cpu') else cond
+            pooled_cpu = pooled.cpu() if pooled is not None and hasattr(pooled, 'cpu') else pooled
+            return cond_cpu, pooled_cpu
+        
+        # Negative prompt (gleich für alle Loops)
+        cached_neg_cond, cached_neg_pooled = get_cond(negative_prompt, base_clip)
+        print(f"  ✓ Negative prompt encoded")
+        
+        # Positive prompts pro Loop
+        cached_pos_conds = []
+        for loop_idx in range(extension_loops):
+            loop_prompt_raw = ""
+            if loop_idx < len(loop_prompts):
+                loop_prompt_raw = (loop_prompts[loop_idx] or "").strip()
+            
+            active_prompt = loop_prompt_raw if loop_prompt_raw else positive_prompt
+            cond, pooled = get_cond(active_prompt, base_clip)
+            cached_pos_conds.append((cond, pooled, active_prompt))
+            print(f"  ✓ Loop {loop_idx + 1} prompt encoded: '{active_prompt[:50]}...'")
+        
+        # CLIP kann jetzt entladen werden
+        comfy.model_management.soft_empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        print("✓ Prompts cached, CLIP can be unloaded now\n")
+
         # === MAIN LOOP ===
         for loop_idx in range(extension_loops):
             loop_id = loop_idx + 1
@@ -783,28 +821,25 @@ class WanVideoExtenderNative:
                 clip = base_clip
                 print(f"⚠️ Loop {loop_id}: LoRA loading failed ({e}), using base model")
 
-            # === PROMPT ===
-            loop_prompt_raw = ""
-            if loop_idx < len(loop_prompts):
-                loop_prompt_raw = (loop_prompts[loop_idx] or "").strip()
-
-            if loop_prompt_raw:
-                active_prompt = loop_prompt_raw
-                print(f"📝 Using Loop {loop_id} Prompt")
+            # === PROMPT (use pre-cached encoding) ===
+            cached_cond, cached_pooled, active_prompt = cached_pos_conds[loop_idx]
+            
+            if loop_idx < len(loop_prompts) and (loop_prompts[loop_idx] or "").strip():
+                print(f"📝 Using Loop {loop_id} Prompt (cached)")
             else:
-                active_prompt = positive_prompt
-                print("📝 Using Base Prompt")
+                print("📝 Using Base Prompt (cached)")
 
             used_prompts_log.append(f"Loop {loop_id}: {active_prompt[:80]}")
 
-            # === CLIP ENCODE ===
-            def get_cond(text, clip_obj):
-                tokens = clip_obj.tokenize(text)
-                cond, pooled = clip_obj.encode_from_tokens(tokens, return_pooled=True)
-                return [[cond, {"pooled_output": pooled}]]
-
-            c_pos = get_cond(active_prompt, clip)
-            c_neg = get_cond(negative_prompt, clip)
+            # === USE CACHED CONDITIONS (move to GPU for sampling) ===
+            device = comfy.model_management.get_torch_device()
+            
+            # pooled kann None sein - dann leeres dict oder None weitergeben
+            pos_pooled_dict = {"pooled_output": cached_pooled.to(device)} if cached_pooled is not None else {}
+            neg_pooled_dict = {"pooled_output": cached_neg_pooled.to(device)} if cached_neg_pooled is not None else {}
+            
+            c_pos = [[cached_cond.to(device), pos_pooled_dict]]
+            c_neg = [[cached_neg_cond.to(device), neg_pooled_dict]]
 
             # === CONTEXT SELECTION ===
             loop_image = loop_images[loop_idx] if loop_idx < len(loop_images) else None
@@ -1028,6 +1063,9 @@ class WanVideoExtenderNative:
                     print(f"💾 Saved segment {loop_id} -> {segment_path}")
                 except Exception as e:
                     print(f"⚠ Failed to save segment {loop_id}: {e}")
+                
+                # Segment tensor nicht mehr nötig
+                del segment_tensor
 
                 # Update context for next loop:
                 # letzte overlap_frames aus [Kontext dieses Loops + neuen Frames]
