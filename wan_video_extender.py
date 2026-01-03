@@ -291,7 +291,8 @@ class WanVideoExtenderNative:
         return lora_str in ("", "none", "null", "disabled", "off")
 
     def _load_lora(self, model, clip, lora_name, strength_model, strength_clip):
-        """Load LoRA and patch model/clip. Returns original if None selected."""
+        """Load LoRA and patch model/clip. Returns original if None selected.
+        Note: clip can be None if already unloaded after prompt encoding."""
         if self._is_lora_none(lora_name):
             return model, clip
 
@@ -311,10 +312,11 @@ class WanVideoExtenderNative:
 
             lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
 
-            # Patch model
-            model_lora, clip_lora = comfy.sd.load_lora_for_models(
-                model, clip, lora, strength_model, strength_clip
-            )
+            # Patch model (clip can be None if already unloaded)
+            with torch.no_grad():  # No gradients needed for patching
+                model_lora, clip_lora = comfy.sd.load_lora_for_models(
+                    model, clip, lora, strength_model, strength_clip
+                )
 
             print("✓ LoRA loaded")
             return model_lora, clip_lora
@@ -750,12 +752,13 @@ class WanVideoExtenderNative:
         print("\n🔤 Pre-encoding all prompts...")
         
         def get_cond(text, clip_obj):
-            tokens = clip_obj.tokenize(text)
-            cond, pooled = clip_obj.encode_from_tokens(tokens, return_pooled=True)
-            # Wichtig: Auf CPU verschieben um VRAM zu sparen
-            # pooled kann None sein bei manchen CLIP-Modellen!
-            cond_cpu = cond.cpu() if hasattr(cond, 'cpu') else cond
-            pooled_cpu = pooled.cpu() if pooled is not None and hasattr(pooled, 'cpu') else pooled
+            with torch.no_grad():  # Disable gradient tracking for encoding
+                tokens = clip_obj.tokenize(text)
+                cond, pooled = clip_obj.encode_from_tokens(tokens, return_pooled=True)
+                # Wichtig: Auf CPU verschieben um VRAM zu sparen
+                # pooled kann None sein bei manchen CLIP-Modellen!
+                cond_cpu = cond.cpu() if hasattr(cond, 'cpu') else cond
+                pooled_cpu = pooled.cpu() if pooled is not None and hasattr(pooled, 'cpu') else pooled
             return cond_cpu, pooled_cpu
         
         # Negative prompt (gleich für alle Loops)
@@ -774,12 +777,14 @@ class WanVideoExtenderNative:
             cached_pos_conds.append((cond, pooled, active_prompt))
             print(f"  ✓ Loop {loop_idx + 1} prompt encoded: '{active_prompt[:50]}...'")
         
-        # CLIP kann jetzt entladen werden
+        # CLIP kann jetzt entladen werden - explizit löschen
+        del base_clip
+        base_clip = None
         comfy.model_management.soft_empty_cache()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
-        print("✓ Prompts cached, CLIP can be unloaded now\n")
+        print("✓ Prompts cached, CLIP explicitly unloaded\n")
 
         # === MAIN LOOP ===
         for loop_idx in range(extension_loops):
@@ -798,27 +803,36 @@ class WanVideoExtenderNative:
             print("─" * 60)
 
             # LoRA pro Loop (Dropdown - None = skip)
+            # Delete old patched models from previous loop to prevent accumulation
+            if loop_idx > 0 and 'model' in locals() and model is not base_model:
+                del model
+                model = None
+            if loop_idx > 0 and 'clip' in locals() and clip is not None and base_clip is not None and clip is not base_clip:
+                del clip
+                clip = None
+            
             try:
                 if loop_idx < len(loop_loras):
                     lora_name, lora_str_model, lora_str_clip = loop_loras[loop_idx]
                     if not self._is_lora_none(lora_name):
                         lora_str_model = self._safe_float(lora_str_model, 1.0)
                         lora_str_clip = self._safe_float(lora_str_clip, 1.0)
+                        # CLIP was deleted after encoding, pass None
                         model, clip = self._load_lora(
-                            base_model, base_clip, lora_name, lora_str_model, lora_str_clip
+                            base_model, None, lora_name, lora_str_model, lora_str_clip
                         )
                         print(f"🎨 Loop {loop_id}: LoRA '{lora_name}' loaded (strength: {lora_str_model})")
                     else:
                         model = base_model
-                        clip = base_clip
+                        clip = None
                         print(f"🎨 Loop {loop_id}: No LoRA (None selected)")
                 else:
                     model = base_model
-                    clip = base_clip
+                    clip = None
             except Exception as e:
                 # LoRA loading failed - continue with base model
                 model = base_model
-                clip = base_clip
+                clip = None
                 print(f"⚠️ Loop {loop_id}: LoRA loading failed ({e}), using base model")
 
             # === PROMPT (use pre-cached encoding) ===
@@ -835,11 +849,12 @@ class WanVideoExtenderNative:
             device = comfy.model_management.get_torch_device()
             
             # pooled kann None sein - dann leeres dict oder None weitergeben
-            pos_pooled_dict = {"pooled_output": cached_pooled.to(device)} if cached_pooled is not None else {}
-            neg_pooled_dict = {"pooled_output": cached_neg_pooled.to(device)} if cached_neg_pooled is not None else {}
+            # Clone and move to avoid keeping cached versions on GPU
+            pos_pooled_dict = {"pooled_output": cached_pooled.clone().to(device)} if cached_pooled is not None else {}
+            neg_pooled_dict = {"pooled_output": cached_neg_pooled.clone().to(device)} if cached_neg_pooled is not None else {}
             
-            c_pos = [[cached_cond.to(device), pos_pooled_dict]]
-            c_neg = [[cached_neg_cond.to(device), neg_pooled_dict]]
+            c_pos = [[cached_cond.clone().to(device), pos_pooled_dict]]
+            c_neg = [[cached_neg_cond.clone().to(device), neg_pooled_dict]]
 
             # === CONTEXT SELECTION ===
             loop_image = loop_images[loop_idx] if loop_idx < len(loop_images) else None
@@ -958,16 +973,17 @@ class WanVideoExtenderNative:
                 print(f"🎨 Loop {loop_id}: No reference image used.")
 
             # === VACE LOGIC ===
-            vace_latents, vace_masks, trim_latent = self.wan_vace_logic(
-                vae=vae,
-                width=W,
-                height=H,
-                length=generate_frames,
-                strength=strength,
-                control_video=full_pixels,
-                control_masks=full_masks,
-                reference_image=current_loop_reference,
-            )
+            with torch.no_grad():  # Disable gradients for VAE encoding
+                vace_latents, vace_masks, trim_latent = self.wan_vace_logic(
+                    vae=vae,
+                    width=W,
+                    height=H,
+                    length=generate_frames,
+                    strength=strength,
+                    control_video=full_pixels,
+                    control_masks=full_masks,
+                    reference_image=current_loop_reference,
+                )
 
             print(f"VACE returned - latents: {vace_latents.shape}, masks: {vace_masks.shape}, trim: {trim_latent}")
 
@@ -1004,27 +1020,28 @@ class WanVideoExtenderNative:
 
             # === SAMPLING ===
             print("🎬 Sampling...")
-            out = nodes.common_ksampler(
-                model=model,
-                seed=current_seed,
-                steps=steps,
-                cfg=cfg,
-                sampler_name=sampler_name,
-                scheduler=scheduler,
-                positive=new_pos,
-                negative=new_neg,
-                latent=latents,
-                denoise=1.0,
-            )
-            new_samples = out[0]["samples"]
+            with torch.no_grad():  # Sampling and decoding don't need gradients
+                out = nodes.common_ksampler(
+                    model=model,
+                    seed=current_seed,
+                    steps=steps,
+                    cfg=cfg,
+                    sampler_name=sampler_name,
+                    scheduler=scheduler,
+                    positive=new_pos,
+                    negative=new_neg,
+                    latent=latents,
+                    denoise=1.0,
+                )
+                new_samples = out[0]["samples"]
 
-            # Trim reference frames if present
-            if trim_latent > 0:
-                new_samples = new_samples[:, :, trim_latent:, :, :]
+                # Trim reference frames if present
+                if trim_latent > 0:
+                    new_samples = new_samples[:, :, trim_latent:, :, :]
 
-            # === DECODE ===
-            decoded = vae.decode(new_samples)
-            decoded = decoded.cpu()
+                # === DECODE ===
+                decoded = vae.decode(new_samples)
+                decoded = decoded.cpu()
 
             if decoded.dim() == 5:
                 decoded = decoded[0]
@@ -1033,7 +1050,11 @@ class WanVideoExtenderNative:
 
             # Cleanup heavy tensors not needed anymore (VRAM)
             del new_samples, vace_latents, vace_masks, empty_latent, latents
-            del c_pos, c_neg, new_pos, new_neg, context_batch
+            del c_pos, c_neg, new_pos, new_neg
+            if 'context_batch' in locals() and context_batch is not None:
+                del context_batch
+            # Also clean up full_pixels and full_masks
+            del full_pixels, full_masks
             comfy.model_management.soft_empty_cache()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -1089,6 +1110,19 @@ class WanVideoExtenderNative:
 
             current_seed += 1
 
+        # === CLEANUP MODELS AFTER ALL LOOPS ===
+        # Explicitly unload models to free VRAM
+        if 'model' in locals() and model is not None and model is not base_model:
+            del model
+        if 'clip' in locals() and clip is not None:
+            del clip
+        del base_model
+        comfy.model_management.soft_empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        print("✓ Models unloaded\n")
+
         # === FINAL COMBINE FROM DISK SEGMENTS (MEMORY OPTIMIZED) ===
         print("\n" + "=" * 60)
         print("COMPLETE - combining segments from disk")
@@ -1116,7 +1150,7 @@ class WanVideoExtenderNative:
                     full_video = seg
                 else:
                     full_video = torch.cat([full_video, seg], dim=0)
-                    del seg  # ⭐ Immediate cleanup!
+                    del seg  # Immediate cleanup!
                     gc.collect()
 
                 total_generated += seg_frames
