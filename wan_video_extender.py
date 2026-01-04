@@ -684,492 +684,568 @@ class WanVideoExtenderNative:
         segment_paths = []  # generated segments (per loop)
         original_input_segment_path = None
         has_initial_input_from_user = (image is not None) or (video is not None)
-
-        # === LOAD INITIAL INPUT (MEMORY OPTIMIZED) ===
-        initial_frames = None
-        if image is not None:
-            print("Input: IMAGE")
-            initial_frames = image
-        elif video is not None:
-            print("Input: VIDEO")
-            if isinstance(video, torch.Tensor):
-                initial_frames = video
-            else:
-                initial_frames = self._load_video_from_file(video)
-
-        context_frames = []
-        H, W = default_height, default_width
-
-        if initial_frames is not None:
-            if isinstance(initial_frames, torch.Tensor) and initial_frames.ndim == 3:
-                initial_frames = initial_frames.unsqueeze(0)
-            if isinstance(initial_frames, torch.Tensor):
-                initial_frames = initial_frames.cpu().float()
-            else:
-                initial_frames = torch.from_numpy(np.array(initial_frames)).float()
-
-            num_input_frames = initial_frames.shape[0]
-            print(f"✓ Loaded {num_input_frames} input frames")
-
-            # Save full input as first segment for final combine (unverändert)
-            original_input_segment_path = os.path.join(segment_dir, "segment_input.pt")
-            try:
-                torch.save(initial_frames, original_input_segment_path)
-                print(f"💾 Saved original input segment: {original_input_segment_path}")
-            except Exception as e:
-                print(f"⚠ Failed to save original input segment: {e}")
-                original_input_segment_path = None
-
-            # Keep only last N frames in RAM as overlap context
-            slice_len = min(num_input_frames, overlap_frames)
-            if slice_len > 0:
-                last_slice = initial_frames[-slice_len:]
-                for i in range(slice_len):
-                    frame = self._normalize_frame(last_slice[i])
-                    context_frames.append(frame.cpu())
-
-            if initial_frames.ndim == 4 and initial_frames.shape[-1] == 3:
-                H, W = initial_frames.shape[1], initial_frames.shape[2]
-            elif initial_frames.ndim == 4 and initial_frames.shape[1] == 3:
-                H, W = initial_frames.shape[2], initial_frames.shape[3]
-
-            del initial_frames
-            gc.collect()
-
-        print(f"Resolution: {W}x{H}")
-        print(f"Initial context frames: {len(context_frames)}")
-
-        current_seed = seed
-
-        # Store base models (for clean LoRA patching each loop)
+        
+        # Track resources for cleanup on cancellation
         base_model = model
         base_clip = clip
+        cleanup_vars = {
+            'model': None,
+            'clip': None,
+            'base_model': base_model,
+            'base_clip': base_clip,
+        }
+        
+        try:  # Wrap everything in try-finally for cancellation handling
 
-        # === PRE-ENCODE ALL PROMPTS (Memory Optimization) ===
-        # Encode alle Prompts JETZT mit base_clip, damit CLIP später nicht mehr
-        # geladen werden muss wenn das Diffusion Model im VRAM ist.
-        # HINWEIS: LoRA-CLIP-Patching wird hier nicht angewendet (nur base_clip)
-        print("\n🔤 Pre-encoding all prompts...")
-        
-        def get_cond(text, clip_obj):
-            with torch.no_grad():  # Disable gradient tracking for encoding
-                tokens = clip_obj.tokenize(text)
-                cond, pooled = clip_obj.encode_from_tokens(tokens, return_pooled=True)
-                # Wichtig: Auf CPU verschieben um VRAM zu sparen
-                # pooled kann None sein bei manchen CLIP-Modellen!
-                cond_cpu = cond.cpu() if hasattr(cond, 'cpu') else cond
-                pooled_cpu = pooled.cpu() if pooled is not None and hasattr(pooled, 'cpu') else pooled
-            return cond_cpu, pooled_cpu
-        
-        # Negative prompt (gleich für alle Loops)
-        cached_neg_cond, cached_neg_pooled = get_cond(negative_prompt, base_clip)
-        print(f"  ✓ Negative prompt encoded")
-        
-        # Positive prompts pro Loop
-        cached_pos_conds = []
-        for loop_idx in range(extension_loops):
-            loop_prompt_raw = ""
-            if loop_idx < len(loop_prompts):
-                loop_prompt_raw = (loop_prompts[loop_idx] or "").strip()
+            # === LOAD INITIAL INPUT (MEMORY OPTIMIZED) ===
+            initial_frames = None
+            if image is not None:
+                print("Input: IMAGE")
+                initial_frames = image
+            elif video is not None:
+                print("Input: VIDEO")
+                if isinstance(video, torch.Tensor):
+                    initial_frames = video
+                else:
+                    initial_frames = self._load_video_from_file(video)
+
+            context_frames = []
+            H, W = default_height, default_width
+
+            if initial_frames is not None:
+                if isinstance(initial_frames, torch.Tensor) and initial_frames.ndim == 3:
+                    initial_frames = initial_frames.unsqueeze(0)
+                if isinstance(initial_frames, torch.Tensor):
+                    initial_frames = initial_frames.cpu().float()
+                else:
+                    initial_frames = torch.from_numpy(np.array(initial_frames)).float()
+
+                num_input_frames = initial_frames.shape[0]
+                print(f"✓ Loaded {num_input_frames} input frames")
+
+                # Save full input as first segment for final combine (unverändert)
+                original_input_segment_path = os.path.join(segment_dir, "segment_input.pt")
+                try:
+                    torch.save(initial_frames, original_input_segment_path)
+                    print(f"💾 Saved original input segment: {original_input_segment_path}")
+                except Exception as e:
+                    print(f"⚠ Failed to save original input segment: {e}")
+                    original_input_segment_path = None
+
+                # Keep only last N frames in RAM as overlap context
+                slice_len = min(num_input_frames, overlap_frames)
+                if slice_len > 0:
+                    last_slice = initial_frames[-slice_len:]
+                    for i in range(slice_len):
+                        frame = self._normalize_frame(last_slice[i])
+                        context_frames.append(frame.cpu())
+
+                if initial_frames.ndim == 4 and initial_frames.shape[-1] == 3:
+                    H, W = initial_frames.shape[1], initial_frames.shape[2]
+                elif initial_frames.ndim == 4 and initial_frames.shape[1] == 3:
+                    H, W = initial_frames.shape[2], initial_frames.shape[3]
+
+                del initial_frames
+                gc.collect()
+
+            print(f"Resolution: {W}x{H}")
+            print(f"Initial context frames: {len(context_frames)}")
+
+            current_seed = seed
+
+            # Store base models (for clean LoRA patching each loop)
+            cleanup_vars['base_model'] = base_model
+            cleanup_vars['base_clip'] = base_clip
+
+            # === PRE-ENCODE ALL PROMPTS (Memory Optimization) ===
+            # Encode alle Prompts JETZT mit base_clip, damit CLIP später nicht mehr
+            # geladen werden muss wenn das Diffusion Model im VRAM ist.
+            # HINWEIS: LoRA-CLIP-Patching wird hier nicht angewendet (nur base_clip)
+            print("\n🔤 Pre-encoding all prompts...")
             
-            active_prompt = loop_prompt_raw if loop_prompt_raw else positive_prompt
-            cond, pooled = get_cond(active_prompt, base_clip)
-            cached_pos_conds.append((cond, pooled, active_prompt))
-            print(f"  ✓ Loop {loop_idx + 1} prompt encoded: '{active_prompt[:50]}...'")
+            def get_cond(text, clip_obj):
+                with torch.no_grad():  # Disable gradient tracking for encoding
+                    tokens = clip_obj.tokenize(text)
+                    cond, pooled = clip_obj.encode_from_tokens(tokens, return_pooled=True)
+                    # Wichtig: Auf CPU verschieben um VRAM zu sparen
+                    # pooled kann None sein bei manchen CLIP-Modellen!
+                    cond_cpu = cond.cpu() if hasattr(cond, 'cpu') else cond
+                    pooled_cpu = pooled.cpu() if pooled is not None and hasattr(pooled, 'cpu') else pooled
+                return cond_cpu, pooled_cpu
         
-        # CLIP kann jetzt entladen werden - explizit löschen
-        del base_clip
-        base_clip = None
-        comfy.model_management.soft_empty_cache()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
-        print("✓ Prompts cached, CLIP explicitly unloaded\n")
-
-        # === MAIN LOOP ===
-        for loop_idx in range(extension_loops):
-            loop_id = loop_idx + 1
-
-            # Cleanup before each loop
+            # Negative prompt (gleich für alle Loops)
+            cached_neg_cond, cached_neg_pooled = get_cond(negative_prompt, base_clip)
+            print(f"  ✓ Negative prompt encoded")
+            
+            # Positive prompts pro Loop
+            cached_pos_conds = []
+            for loop_idx in range(extension_loops):
+                loop_prompt_raw = ""
+                if loop_idx < len(loop_prompts):
+                    loop_prompt_raw = (loop_prompts[loop_idx] or "").strip()
+                
+                active_prompt = loop_prompt_raw if loop_prompt_raw else positive_prompt
+                cond, pooled = get_cond(active_prompt, base_clip)
+                cached_pos_conds.append((cond, pooled, active_prompt))
+                print(f"  ✓ Loop {loop_idx + 1} prompt encoded: '{active_prompt[:50]}...'")
+            
+            # CLIP kann jetzt entladen werden - explizit löschen
+            del base_clip
+            base_clip = None
+            cleanup_vars['base_clip'] = None
             comfy.model_management.soft_empty_cache()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
+            print("✓ Prompts cached, CLIP explicitly unloaded\n")
 
-            print("\n" + "─" * 60)
-            print(f"LOOP {loop_id}/{extension_loops}")
-            if torch.cuda.is_available():
-                print(f"VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB (vor Loop)")
-            print("─" * 60)
+            # === MAIN LOOP ===
+            for loop_idx in range(extension_loops):
+                loop_id = loop_idx + 1
 
-            # LoRA pro Loop (Dropdown - None = skip)
-            # Delete old patched models from previous loop to prevent accumulation
-            if loop_idx > 0 and 'model' in locals() and model is not base_model:
-                del model
-                model = None
-            if loop_idx > 0 and 'clip' in locals() and clip is not None and base_clip is not None and clip is not base_clip:
-                del clip
-                clip = None
-            
-            try:
-                if loop_idx < len(loop_loras):
-                    lora_name, lora_str_model, lora_str_clip = loop_loras[loop_idx]
-                    if not self._is_lora_none(lora_name):
-                        lora_str_model = self._safe_float(lora_str_model, 1.0)
-                        lora_str_clip = self._safe_float(lora_str_clip, 1.0)
-                        # CLIP was deleted after encoding, pass None
-                        model, clip = self._load_lora(
-                            base_model, None, lora_name, lora_str_model, lora_str_clip
-                        )
-                        print(f"🎨 Loop {loop_id}: LoRA '{lora_name}' loaded (strength: {lora_str_model})")
+                # Cleanup before each loop
+                comfy.model_management.soft_empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+                print("\n" + "─" * 60)
+                print(f"LOOP {loop_id}/{extension_loops}")
+                if torch.cuda.is_available():
+                    print(f"VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB (vor Loop)")
+                print("─" * 60)
+
+                # LoRA pro Loop (Dropdown - None = skip)
+                # Delete old patched models from previous loop to prevent accumulation
+                if loop_idx > 0 and 'model' in locals() and model is not base_model:
+                    del model
+                    model = None
+                if loop_idx > 0 and 'clip' in locals() and clip is not None and base_clip is not None and clip is not base_clip:
+                    del clip
+                    clip = None
+                
+                try:
+                    if loop_idx < len(loop_loras):
+                        lora_name, lora_str_model, lora_str_clip = loop_loras[loop_idx]
+                        if not self._is_lora_none(lora_name):
+                            lora_str_model = self._safe_float(lora_str_model, 1.0)
+                            lora_str_clip = self._safe_float(lora_str_clip, 1.0)
+                            # CLIP was deleted after encoding, pass None
+                            model, clip = self._load_lora(
+                                base_model, None, lora_name, lora_str_model, lora_str_clip
+                            )
+                            cleanup_vars['model'] = model  # Track for cancellation cleanup
+                            cleanup_vars['clip'] = clip
+                            print(f"🎨 Loop {loop_id}: LoRA '{lora_name}' loaded (strength: {lora_str_model})")
+                        else:
+                            model = base_model
+                            clip = None
+                            cleanup_vars['model'] = model
+                            cleanup_vars['clip'] = clip
+                            print(f"🎨 Loop {loop_id}: No LoRA (None selected)")
                     else:
                         model = base_model
                         clip = None
-                        print(f"🎨 Loop {loop_id}: No LoRA (None selected)")
-                else:
+                        cleanup_vars['model'] = model
+                        cleanup_vars['clip'] = clip
+                except Exception as e:
+                    # LoRA loading failed - continue with base model
                     model = base_model
                     clip = None
-            except Exception as e:
-                # LoRA loading failed - continue with base model
-                model = base_model
-                clip = None
-                print(f"⚠️ Loop {loop_id}: LoRA loading failed ({e}), using base model")
+                    cleanup_vars['model'] = model
+                    cleanup_vars['clip'] = clip
+                    print(f"⚠️ Loop {loop_id}: LoRA loading failed ({e}), using base model")
 
-            # === PROMPT (use pre-cached encoding) ===
-            cached_cond, cached_pooled, active_prompt = cached_pos_conds[loop_idx]
-            
-            if loop_idx < len(loop_prompts) and (loop_prompts[loop_idx] or "").strip():
-                print(f"📝 Using Loop {loop_id} Prompt (cached)")
-            else:
-                print("📝 Using Base Prompt (cached)")
+                # === PROMPT (use pre-cached encoding) ===
+                cached_cond, cached_pooled, active_prompt = cached_pos_conds[loop_idx]
+                
+                if loop_idx < len(loop_prompts) and (loop_prompts[loop_idx] or "").strip():
+                    print(f"📝 Using Loop {loop_id} Prompt (cached)")
+                else:
+                    print("📝 Using Base Prompt (cached)")
 
-            used_prompts_log.append(f"Loop {loop_id}: {active_prompt[:80]}")
+                used_prompts_log.append(f"Loop {loop_id}: {active_prompt[:80]}")
 
-            # === USE CACHED CONDITIONS (move to GPU for sampling) ===
-            device = comfy.model_management.get_torch_device()
-            
-            # pooled kann None sein - dann leeres dict oder None weitergeben
-            # Clone and move to avoid keeping cached versions on GPU
-            pos_pooled_dict = {"pooled_output": cached_pooled.clone().to(device)} if cached_pooled is not None else {}
-            neg_pooled_dict = {"pooled_output": cached_neg_pooled.clone().to(device)} if cached_neg_pooled is not None else {}
-            
-            c_pos = [[cached_cond.clone().to(device), pos_pooled_dict]]
-            c_neg = [[cached_neg_cond.clone().to(device), neg_pooled_dict]]
+                # === USE CACHED CONDITIONS (move to GPU for sampling) ===
+                device = comfy.model_management.get_torch_device()
+                
+                # pooled kann None sein - dann leeres dict oder None weitergeben
+                # Clone and move to avoid keeping cached versions on GPU
+                pos_pooled_dict = {"pooled_output": cached_pooled.clone().to(device)} if cached_pooled is not None else {}
+                neg_pooled_dict = {"pooled_output": cached_neg_pooled.clone().to(device)} if cached_neg_pooled is not None else {}
+                
+                c_pos = [[cached_cond.clone().to(device), pos_pooled_dict]]
+                c_neg = [[cached_neg_cond.clone().to(device), neg_pooled_dict]]
 
-            # === CONTEXT SELECTION ===
-            loop_image = loop_images[loop_idx] if loop_idx < len(loop_images) else None
-            loop_image_frames = []
+                # === CONTEXT SELECTION ===
+                loop_image = loop_images[loop_idx] if loop_idx < len(loop_images) else None
+                loop_image_frames = []
 
-            if loop_image is not None:
-                loop_image_frames = self._tensor_to_frame_list(loop_image)
-                if len(loop_image_frames) > 0:
-                    print(f"🎬 Loop {loop_id}: using {len(loop_image_frames)} loop image frame(s) as CUT context.")
-                    base_context_candidate = loop_image_frames
+                if loop_image is not None:
+                    loop_image_frames = self._tensor_to_frame_list(loop_image)
+                    if len(loop_image_frames) > 0:
+                        print(f"🎬 Loop {loop_id}: using {len(loop_image_frames)} loop image frame(s) as CUT context.")
+                        base_context_candidate = loop_image_frames
+                    else:
+                        base_context_candidate = context_frames
                 else:
                     base_context_candidate = context_frames
-            else:
-                base_context_candidate = context_frames
 
-            if len(base_context_candidate) > 0:
-                max_context = min(len(base_context_candidate), overlap_frames, generate_frames)
-                selected_context_frames = base_context_candidate[-max_context:]
-            else:
-                selected_context_frames = []
-
-            if len(selected_context_frames) > 0:
-                H, W, C = selected_context_frames[0].shape
-            else:
-                H, W = default_height, default_width
-
-            print(f"Frame size: {H}x{W}, Context frames this loop: {len(selected_context_frames)}")
-
-            # === BUILD VACE INPUT ===
-            full_pixels = torch.ones((generate_frames, H, W, 3), device="cpu") * empty_frame_level
-            full_masks = torch.ones((generate_frames, H, W), device="cpu")
-
-            context_count = 0
-            if len(selected_context_frames) > 0:
-                context_batch = torch.stack(selected_context_frames)
-                context_count = context_batch.shape[0]
-
-                has_loop_image = loop_image is not None and len(loop_image_frames) > 0
-
-                if loop_idx == 0:
-                    write_context = True
-                    if has_loop_image:
-                        print(f"🚀 Loop 1: Using image_loop_1 as hard-cut context ({context_count} frames)")
-                    else:
-                        print(f"🚀 Loop 1: Using initial input as context ({context_count} frames)")
+                if len(base_context_candidate) > 0:
+                    max_context = min(len(base_context_candidate), overlap_frames, generate_frames)
+                    selected_context_frames = base_context_candidate[-max_context:]
                 else:
-                    if has_loop_image:
+                    selected_context_frames = []
+
+                if len(selected_context_frames) > 0:
+                    H, W, C = selected_context_frames[0].shape
+                else:
+                    H, W = default_height, default_width
+
+                print(f"Frame size: {H}x{W}, Context frames this loop: {len(selected_context_frames)}")
+
+                # === BUILD VACE INPUT ===
+                full_pixels = torch.ones((generate_frames, H, W, 3), device="cpu") * empty_frame_level
+                full_masks = torch.ones((generate_frames, H, W), device="cpu")
+
+                context_count = 0
+                if len(selected_context_frames) > 0:
+                    context_batch = torch.stack(selected_context_frames)
+                    context_count = context_batch.shape[0]
+
+                    has_loop_image = loop_image is not None and len(loop_image_frames) > 0
+
+                    if loop_idx == 0:
                         write_context = True
-                        print(f"✂️ Loop {loop_id}: Using loop image(s) as hard-cut context ({context_count} frames)")
-                    else:
-                        write_context = bool(loop_use_overlap[loop_idx])
-                        if write_context:
-                            print(f"🔁 Loop {loop_id}: Using overlap context ({context_count} frames)")
+                        if has_loop_image:
+                            print(f"🚀 Loop 1: Using image_loop_1 as hard-cut context ({context_count} frames)")
                         else:
-                            print(f"⛔ Loop {loop_id}: Context/Overlap disabled")
-
-                if write_context:
-                    full_pixels[:context_count] = context_batch
-                    full_masks[:context_count] = 0.0
-                    print(f"✅ Context written to canvas: {context_count} frames")
-                else:
-                    context_count = 0
-            else:
-                context_batch = None
-
-            # === ENDFRAME LOGIC (VACE Start-to-End) ===
-            endframe_count = 0
-            if loop_use_endframe[loop_idx]:
-                # Get image from NEXT loop as endframe target
-                next_loop_idx = loop_idx + 1
-                if next_loop_idx < len(loop_images) and loop_images[next_loop_idx] is not None:
-                    endframe_source = loop_images[next_loop_idx]
-                    endframe_frames = self._tensor_to_frame_list(endframe_source)
-                    
-                    if len(endframe_frames) > 0:
-                        # Resize endframes to match current resolution if needed
-                        resized_endframes = []
-                        for ef in endframe_frames:
-                            if ef.shape[0] != H or ef.shape[1] != W:
-                                # Resize using torch interpolate
-                                ef_resized = torch.nn.functional.interpolate(
-                                    ef.permute(2, 0, 1).unsqueeze(0),
-                                    size=(H, W),
-                                    mode='bilinear',
-                                    align_corners=False
-                                ).squeeze(0).permute(1, 2, 0)
-                                resized_endframes.append(ef_resized)
+                            print(f"🚀 Loop 1: Using initial input as context ({context_count} frames)")
+                    else:
+                        if has_loop_image:
+                            write_context = True
+                            print(f"✂️ Loop {loop_id}: Using loop image(s) as hard-cut context ({context_count} frames)")
+                        else:
+                            write_context = bool(loop_use_overlap[loop_idx])
+                            if write_context:
+                                print(f"🔁 Loop {loop_id}: Using overlap context ({context_count} frames)")
                             else:
-                                resized_endframes.append(ef)
-                        
-                        endframe_batch = torch.stack(resized_endframes)
-                        endframe_count = min(endframe_batch.shape[0], generate_frames - context_count - 1)
-                        
-                        if endframe_count > 0:
-                            # Place endframes at the END of full_pixels
-                            end_start_idx = generate_frames - endframe_count
-                            full_pixels[end_start_idx:] = endframe_batch[:endframe_count]
-                            full_masks[end_start_idx:] = 0.0
-                            print(f"🎯 Loop {loop_id}: Endframe enabled - using {endframe_count} frame(s) from Loop {next_loop_idx + 1} as target")
-                        else:
-                            print(f"⚠️ Loop {loop_id}: Endframe requested but no space left after context")
+                                print(f"⛔ Loop {loop_id}: Context/Overlap disabled")
+
+                    if write_context:
+                        full_pixels[:context_count] = context_batch
+                        full_masks[:context_count] = 0.0
+                        print(f"✅ Context written to canvas: {context_count} frames")
                     else:
-                        print(f"⚠️ Loop {loop_id}: Endframe enabled but next loop has no valid image")
+                        context_count = 0
                 else:
-                    print(f"⚠️ Loop {loop_id}: Endframe enabled but no image connected to Loop {next_loop_idx + 1}")
+                    context_batch = None
 
-            # === REFERENCE IMAGE ===
-            current_loop_reference = None
-            if loop_reference_images[loop_idx] is not None:
-                current_loop_reference = loop_reference_images[loop_idx]
-                print(f"🎨 Loop {loop_id}: Using local loop reference image.")
-            elif reference_image is not None and loop_use_reference[loop_idx]:
-                current_loop_reference = reference_image
-                print(f"🎨 Loop {loop_id}: Using global reference image (switch enabled).")
-            else:
-                print(f"🎨 Loop {loop_id}: No reference image used.")
+                # === ENDFRAME LOGIC (VACE Start-to-End) ===
+                endframe_count = 0
+                if loop_use_endframe[loop_idx]:
+                    # Get image from NEXT loop as endframe target
+                    next_loop_idx = loop_idx + 1
+                    if next_loop_idx < len(loop_images) and loop_images[next_loop_idx] is not None:
+                        endframe_source = loop_images[next_loop_idx]
+                        endframe_frames = self._tensor_to_frame_list(endframe_source)
+                        
+                        if len(endframe_frames) > 0:
+                            # Resize endframes to match current resolution if needed
+                            resized_endframes = []
+                            for ef in endframe_frames:
+                                if ef.shape[0] != H or ef.shape[1] != W:
+                                    # Resize using torch interpolate
+                                    ef_resized = torch.nn.functional.interpolate(
+                                        ef.permute(2, 0, 1).unsqueeze(0),
+                                        size=(H, W),
+                                        mode='bilinear',
+                                        align_corners=False
+                                    ).squeeze(0).permute(1, 2, 0)
+                                    resized_endframes.append(ef_resized)
+                                else:
+                                    resized_endframes.append(ef)
+                            
+                            endframe_batch = torch.stack(resized_endframes)
+                            endframe_count = min(endframe_batch.shape[0], generate_frames - context_count - 1)
+                            
+                            if endframe_count > 0:
+                                # Place endframes at the END of full_pixels
+                                end_start_idx = generate_frames - endframe_count
+                                full_pixels[end_start_idx:] = endframe_batch[:endframe_count]
+                                full_masks[end_start_idx:] = 0.0
+                                print(f"🎯 Loop {loop_id}: Endframe enabled - using {endframe_count} frame(s) from Loop {next_loop_idx + 1} as target")
+                            else:
+                                print(f"⚠️ Loop {loop_id}: Endframe requested but no space left after context")
+                        else:
+                            print(f"⚠️ Loop {loop_id}: Endframe enabled but next loop has no valid image")
+                    else:
+                        print(f"⚠️ Loop {loop_id}: Endframe enabled but no image connected to Loop {next_loop_idx + 1}")
 
-            # === VACE LOGIC ===
-            with torch.no_grad():  # Disable gradients for VAE encoding
-                vace_latents, vace_masks, trim_latent = self.wan_vace_logic(
-                    vae=vae,
-                    width=W,
-                    height=H,
-                    length=generate_frames,
-                    strength=strength,
-                    control_video=full_pixels,
-                    control_masks=full_masks,
-                    reference_image=current_loop_reference,
+                # === REFERENCE IMAGE ===
+                current_loop_reference = None
+                if loop_reference_images[loop_idx] is not None:
+                    current_loop_reference = loop_reference_images[loop_idx]
+                    print(f"🎨 Loop {loop_id}: Using local loop reference image.")
+                elif reference_image is not None and loop_use_reference[loop_idx]:
+                    current_loop_reference = reference_image
+                    print(f"🎨 Loop {loop_id}: Using global reference image (switch enabled).")
+                else:
+                    print(f"🎨 Loop {loop_id}: No reference image used.")
+
+                # === VACE LOGIC ===
+                with torch.no_grad():  # Disable gradients for VAE encoding
+                    vace_latents, vace_masks, trim_latent = self.wan_vace_logic(
+                        vae=vae,
+                        width=W,
+                        height=H,
+                        length=generate_frames,
+                        strength=strength,
+                        control_video=full_pixels,
+                        control_masks=full_masks,
+                        reference_image=current_loop_reference,
+                    )
+
+                print(f"VACE returned - latents: {vace_latents.shape}, masks: {vace_masks.shape}, trim: {trim_latent}")
+
+                # === CONDITIONING ===
+                new_pos = node_helpers.conditioning_set_values(
+                    c_pos,
+                    {
+                        "vace_frames": [vace_latents],
+                        "vace_mask": [vace_masks],
+                        "vace_strength": [strength],
+                    },
+                    append=True,
                 )
 
-            print(f"VACE returned - latents: {vace_latents.shape}, masks: {vace_masks.shape}, trim: {trim_latent}")
-
-            # === CONDITIONING ===
-            new_pos = node_helpers.conditioning_set_values(
-                c_pos,
-                {
-                    "vace_frames": [vace_latents],
-                    "vace_mask": [vace_masks],
-                    "vace_strength": [strength],
-                },
-                append=True,
-            )
-
-            new_neg = node_helpers.conditioning_set_values(
-                c_neg,
-                {
-                    "vace_frames": [vace_latents],
-                    "vace_mask": [vace_masks],
-                    "vace_strength": [strength],
-                },
-                append=True,
-            )
-
-            # === EMPTY LATENT ===
-            latent_length = ((generate_frames - 1) // 4) + 1 + trim_latent
-            empty_latent = torch.zeros(
-                [1, 16, latent_length, H // 8, W // 8],
-                device=comfy.model_management.get_torch_device(),
-            )
-            latents = {"samples": empty_latent}
-
-            print(f"Empty latent shape: {empty_latent.shape}")
-
-            # === SAMPLING ===
-            print("🎬 Sampling...")
-            with torch.no_grad():  # Sampling and decoding don't need gradients
-                out = nodes.common_ksampler(
-                    model=model,
-                    seed=current_seed,
-                    steps=steps,
-                    cfg=cfg,
-                    sampler_name=sampler_name,
-                    scheduler=scheduler,
-                    positive=new_pos,
-                    negative=new_neg,
-                    latent=latents,
-                    denoise=1.0,
+                new_neg = node_helpers.conditioning_set_values(
+                    c_neg,
+                    {
+                        "vace_frames": [vace_latents],
+                        "vace_mask": [vace_masks],
+                        "vace_strength": [strength],
+                    },
+                    append=True,
                 )
-                new_samples = out[0]["samples"]
 
-                # Trim reference frames if present
-                if trim_latent > 0:
-                    new_samples = new_samples[:, :, trim_latent:, :, :]
+                # === EMPTY LATENT ===
+                latent_length = ((generate_frames - 1) // 4) + 1 + trim_latent
+                empty_latent = torch.zeros(
+                    [1, 16, latent_length, H // 8, W // 8],
+                    device=comfy.model_management.get_torch_device(),
+                )
+                latents = {"samples": empty_latent}
 
-                # === DECODE ===
-                decoded = vae.decode(new_samples)
-                decoded = decoded.cpu()
+                print(f"Empty latent shape: {empty_latent.shape}")
 
-            if decoded.dim() == 5:
-                decoded = decoded[0]
+                # === SAMPLING ===
+                print("🎬 Sampling...")
+                with torch.no_grad():  # Sampling and decoding don't need gradients
+                    out = nodes.common_ksampler(
+                        model=model,
+                        seed=current_seed,
+                        steps=steps,
+                        cfg=cfg,
+                        sampler_name=sampler_name,
+                        scheduler=scheduler,
+                        positive=new_pos,
+                        negative=new_neg,
+                        latent=latents,
+                        denoise=1.0,
+                    )
+                    new_samples = out[0]["samples"]
 
-            print(f"✓ Decoded: {decoded.shape}")
+                    # Trim reference frames if present
+                    if trim_latent > 0:
+                        new_samples = new_samples[:, :, trim_latent:, :, :]
 
-            # Cleanup heavy tensors not needed anymore (VRAM)
-            del new_samples, vace_latents, vace_masks, empty_latent, latents
-            del c_pos, c_neg, new_pos, new_neg
-            if 'context_batch' in locals() and context_batch is not None:
-                del context_batch
-            # Also clean up full_pixels and full_masks
-            del full_pixels, full_masks
+                    # === DECODE ===
+                    decoded = vae.decode(new_samples)
+                    decoded = decoded.cpu()
+
+                if decoded.dim() == 5:
+                    decoded = decoded[0]
+
+                print(f"✓ Decoded: {decoded.shape}")
+
+                # Cleanup heavy tensors not needed anymore (VRAM)
+                del new_samples, vace_latents, vace_masks, empty_latent, latents
+                del c_pos, c_neg, new_pos, new_neg
+                if 'context_batch' in locals() and context_batch is not None:
+                    del context_batch
+                # Also clean up full_pixels and full_masks
+                del full_pixels, full_masks
+                comfy.model_management.soft_empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+                # === ADD FRAMES AS DISK SEGMENT (ONLY NEW PART, Kontext + Endframes überspringen) ===
+                skip_count = context_count
+                end_trim = endframe_count  # Trim endframes from output
+                new_frames_list = []
+                frame_end_idx = decoded.shape[0] - end_trim
+                for j in range(skip_count, frame_end_idx):
+                    frame = self._normalize_frame(decoded[j]).cpu()
+                    new_frames_list.append(frame)
+
+                new_frames = len(new_frames_list)
+                if end_trim > 0:
+                    print(f"✓ New frames this loop: {new_frames} (skipped {skip_count} start, {end_trim} end)")
+                else:
+                    print(f"✓ New frames this loop (without overlap/context): {new_frames}")
+
+                if new_frames > 0:
+                    segment_tensor = torch.stack(new_frames_list)
+                    segment_path = os.path.join(segment_dir, f"segment_{loop_id:03d}.pt")
+                    try:
+                        torch.save(segment_tensor, segment_path)
+                        segment_paths.append(segment_path)
+                        print(f"💾 Saved segment {loop_id} -> {segment_path}")
+                    except Exception as e:
+                        print(f"⚠ Failed to save segment {loop_id}: {e}")
+                    
+                    # Segment tensor nicht mehr nötig
+                    del segment_tensor
+
+                    # Update context for next loop:
+                    # letzte overlap_frames aus [Kontext dieses Loops + neuen Frames]
+                    combined_tail = selected_context_frames + new_frames_list
+                    if len(combined_tail) > overlap_frames:
+                        context_frames = combined_tail[-overlap_frames:]
+                    else:
+                        context_frames = combined_tail
+                else:
+                    # No new frames — keep context as is
+                    print(
+                        "⚠ No new frames generated in this loop, keeping previous context_frames"
+                    )
+
+                # Cleanup loop-local variables (CPU)
+                del decoded, new_frames_list
+                comfy.model_management.soft_empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+                current_seed += 1
+
+            # === CLEANUP MODELS AFTER ALL LOOPS ===
+            # Explicitly unload models to free VRAM
+            if 'model' in locals() and model is not None and model is not base_model:
+                del model
+            if 'clip' in locals() and clip is not None:
+                del clip
+            del base_model
             comfy.model_management.soft_empty_cache()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
+            print("✓ Models unloaded\n")
 
-            # === ADD FRAMES AS DISK SEGMENT (ONLY NEW PART, Kontext + Endframes überspringen) ===
-            skip_count = context_count
-            end_trim = endframe_count  # Trim endframes from output
-            new_frames_list = []
-            frame_end_idx = decoded.shape[0] - end_trim
-            for j in range(skip_count, frame_end_idx):
-                frame = self._normalize_frame(decoded[j]).cpu()
-                new_frames_list.append(frame)
+            # === FINAL COMBINE FROM DISK SEGMENTS (MEMORY OPTIMIZED) ===
+            print("\n" + "=" * 60)
+            print("COMPLETE - combining segments from disk")
+            print("=" * 60 + "\n")
 
-            new_frames = len(new_frames_list)
-            if end_trim > 0:
-                print(f"✓ New frames this loop: {new_frames} (skipped {skip_count} start, {end_trim} end)")
-            else:
-                print(f"✓ New frames this loop (without overlap/context): {new_frames}")
+            full_video = None
 
-            if new_frames > 0:
-                segment_tensor = torch.stack(new_frames_list)
-                segment_path = os.path.join(segment_dir, f"segment_{loop_id:03d}.pt")
+            # 1) If user provided input (image or video), load original input segment first
+            if has_initial_input_from_user and original_input_segment_path is not None:
                 try:
-                    torch.save(segment_tensor, segment_path)
-                    segment_paths.append(segment_path)
-                    print(f"💾 Saved segment {loop_id} -> {segment_path}")
+                    full_video = torch.load(original_input_segment_path, map_location="cpu")
+                    print(f"📥 Loaded original input segment ({full_video.shape[0]} frames)")
                 except Exception as e:
-                    print(f"⚠ Failed to save segment {loop_id}: {e}")
-                
-                # Segment tensor nicht mehr nötig
-                del segment_tensor
+                    print(f"⚠ Failed to load original input segment: {e}")
 
-                # Update context for next loop:
-                # letzte overlap_frames aus [Kontext dieses Loops + neuen Frames]
-                combined_tail = selected_context_frames + new_frames_list
-                if len(combined_tail) > overlap_frames:
-                    context_frames = combined_tail[-overlap_frames:]
-                else:
-                    context_frames = combined_tail
-            else:
-                # No new frames — keep context as is
-                print(
-                    "⚠ No new frames generated in this loop, keeping previous context_frames"
-                )
+            # 2) Append all generated segments incrementally (memory efficient!)
+            total_generated = 0
+            for idx, p in enumerate(segment_paths):
+                try:
+                    print(f"📥 Loading segment {os.path.basename(p)}...")
+                    seg = torch.load(p, map_location="cpu")
+                    seg_frames = seg.shape[0]
 
-            # Cleanup loop-local variables (CPU)
-            del decoded, new_frames_list
-            comfy.model_management.soft_empty_cache()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+                    if full_video is None:
+                        full_video = seg
+                    else:
+                        full_video = torch.cat([full_video, seg], dim=0)
+                        del seg  # Immediate cleanup!
+                        gc.collect()
+
+                    total_generated += seg_frames
+                    print(f"  ✓ Total frames now: {full_video.shape[0]}")
+                except Exception as e:
+                    print(f"⚠ Failed to load segment {p}: {e}")
+
+            # 3) If no segments at all, create empty fallback
+            if full_video is None:
+                full_video = torch.zeros((1, default_height, default_width, 3))
+
+            return full_video, "\n".join(used_prompts_log)
+        
+        # except Exception as e:
+        #     # Handle cancellation or any other error
+        #     print(f"\n⚠️ ERROR or CANCELLATION: {e}")
+        #     print("⚠️ Performing emergency VRAM cleanup...")
+            
+        #     # Emergency VRAM cleanup on cancellation
+        #     try:
+        #         if torch.cuda.is_available():
+        #             torch.cuda.empty_cache()
+        #             torch.cuda.synchronize()
+        #         comfy.model_management.soft_empty_cache()
+        #         comfy.model_management.cleanup_models()
+        #     except Exception as emerg_err:
+        #         print(f"⚠️ Emergency cleanup error: {emerg_err}")
+            
+        #     import traceback
+        #     traceback.print_exc()
+        #     raise
+        finally:
+            # CRITICAL: Always cleanup on exit (even if cancelled!)
+            print("\n🧹 Performing cleanup...")
+            
+            # Clean up models
+            try:
+                if cleanup_vars.get('model') is not None and cleanup_vars.get('model') is not cleanup_vars.get('base_model'):
+                    del cleanup_vars['model']
+                if cleanup_vars.get('clip') is not None:
+                    del cleanup_vars['clip']
+                if cleanup_vars.get('base_model') is not None:
+                    del cleanup_vars['base_model']
+                if cleanup_vars.get('base_clip') is not None:
+                    del cleanup_vars['base_clip']
+            except Exception as cleanup_err:
+                print(f"⚠️ Error during model cleanup: {cleanup_err}")
+            
+            # Clean up any GPU tensors
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+            except Exception as cleanup_err:
+                print(f"⚠️ Error during CUDA cleanup: {cleanup_err}")
+            
+            # Clean up ComfyUI cache
+            try:
+                comfy.model_management.soft_empty_cache()
+                comfy.model_management.cleanup_models()
+            except Exception as cleanup_err:
+                print(f"⚠️ Error during cache cleanup: {cleanup_err}")
+            
+            # Clean up temp directory
+            try:
+                if os.path.exists(segment_dir):
+                    shutil.rmtree(segment_dir)
+                    print(f"✓ Cleaned temp dir: {segment_dir}")
+            except Exception as cleanup_err:
+                print(f"⚠️ Could not remove temp dir {segment_dir}: {cleanup_err}")
+            
+            # Final garbage collection
             gc.collect()
-
-            current_seed += 1
-
-        # === CLEANUP MODELS AFTER ALL LOOPS ===
-        # Explicitly unload models to free VRAM
-        if 'model' in locals() and model is not None and model is not base_model:
-            del model
-        if 'clip' in locals() and clip is not None:
-            del clip
-        del base_model
-        comfy.model_management.soft_empty_cache()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
-        print("✓ Models unloaded\n")
-
-        # === FINAL COMBINE FROM DISK SEGMENTS (MEMORY OPTIMIZED) ===
-        print("\n" + "=" * 60)
-        print("COMPLETE - combining segments from disk")
-        print("=" * 60 + "\n")
-
-        full_video = None
-
-        # 1) If user provided input (image or video), load original input segment first
-        if has_initial_input_from_user and original_input_segment_path is not None:
-            try:
-                full_video = torch.load(original_input_segment_path, map_location="cpu")
-                print(f"📥 Loaded original input segment ({full_video.shape[0]} frames)")
-            except Exception as e:
-                print(f"⚠ Failed to load original input segment: {e}")
-
-        # 2) Append all generated segments incrementally (memory efficient!)
-        total_generated = 0
-        for idx, p in enumerate(segment_paths):
-            try:
-                print(f"📥 Loading segment {os.path.basename(p)}...")
-                seg = torch.load(p, map_location="cpu")
-                seg_frames = seg.shape[0]
-
-                if full_video is None:
-                    full_video = seg
-                else:
-                    full_video = torch.cat([full_video, seg], dim=0)
-                    del seg  # Immediate cleanup!
-                    gc.collect()
-
-                total_generated += seg_frames
-                print(f"  ✓ Total frames now: {full_video.shape[0]}")
-            except Exception as e:
-                print(f"⚠ Failed to load segment {p}: {e}")
-
-        # 3) If no segments at all, create empty fallback
-        if full_video is None:
-            full_video = torch.zeros((1, default_height, default_width, 3))
-
-        # Cleanup temp directory
-        try:
-            shutil.rmtree(segment_dir)
-            print(f"🧹 Cleaned temp dir: {segment_dir}")
-        except Exception as e:
-            print(f"⚠ Could not remove temp dir {segment_dir}: {e}")
-
-        return full_video, "\n".join(used_prompts_log)
+            print("✓ Cleanup complete\n")
 
 
 NODE_CLASS_MAPPINGS = {
